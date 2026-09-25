@@ -6,7 +6,7 @@ The application combines a **React + Vite frontend**, **FastAPI backend**, **Oll
 
 ---
 
-## ✨ Features
+## Features
 
 - 🤖 AI-powered conversational chat
 - 💬 Persistent chat history
@@ -26,7 +26,7 @@ The application combines a **React + Vite frontend**, **FastAPI backend**, **Oll
 
 ---
 
-## 🏗️ System Architecture
+## System Architecture
 
 ```text
 ┌──────────────────────────────┐
@@ -65,7 +65,7 @@ The application combines a **React + Vite frontend**, **FastAPI backend**, **Oll
 
 ---
 
-## 🛠️ Technology Stack
+## Technology Stack
 
 ### Frontend
 
@@ -102,7 +102,7 @@ The application combines a **React + Vite frontend**, **FastAPI backend**, **Oll
 
 ---
 
-## 📂 Project Structure
+## Project Structure
 
 ```text
 AI-Intelligent-Chatbot/
@@ -132,7 +132,7 @@ AI-Intelligent-Chatbot/
 
 ---
 
-# 🚀 Installation
+# Installation
 
 ## 1. Clone the Repository
 
@@ -187,7 +187,7 @@ You should have the required Llama and embedding models available.
 
 ---
 
-# ▶️ Running the Application
+# Running the Application
 
 The application uses three components:
 
@@ -247,7 +247,7 @@ http://localhost:5173
 
 ---
 
-# 💬 How to Use
+# How to Use
 
 ### 1. Start a New Chat
 
@@ -291,7 +291,7 @@ Previous conversations remain available after refreshing the browser and reopeni
 
 ---
 
-# 🧠 Retrieval-Augmented Generation
+# Retrieval-Augmented Generation
 
 The document question-answering pipeline follows this workflow:
 
@@ -323,7 +323,7 @@ RAG allows the chatbot to retrieve relevant information from uploaded documents 
 
 ---
 
-# 💾 Persistence
+# Persistence
 
 The application stores important application data so conversations can survive browser refreshes and backend restarts.
 
@@ -339,7 +339,7 @@ Documents are associated with their relevant chats to prevent unrelated conversa
 
 ---
 
-# 🔌 API Endpoints
+# API Endpoints
 
 | Method | Endpoint               | Purpose                  |
 | ------ | ---------------------- | ------------------------ |
@@ -359,7 +359,7 @@ http://127.0.0.1:8000/docs
 
 ---
 
-# 🧪 Testing
+# Testing
 
 Run the automated tests with:
 
@@ -384,7 +384,7 @@ The project also includes backend syntax/dependency checks and frontend build/li
 
 ---
 
-# 🔒 Security & Privacy
+# Security & Privacy
 
 This project is primarily intended for local development, learning, portfolio demonstration, and experimentation.
 
@@ -398,7 +398,7 @@ For production deployment, consider adding authentication, authorization, HTTPS,
 
 ---
 
-# 📈 Future Enhancements
+# Future Enhancements
 
 Potential improvements include:
 
@@ -417,7 +417,7 @@ Potential improvements include:
 
 ---
 
-# 🎯 Project Objectives
+# Project Objectives
 
 This project demonstrates the integration of modern AI and full-stack technologies, including:
 
@@ -433,7 +433,7 @@ This project demonstrates the integration of modern AI and full-stack technologi
 
 ---
 
-# 📌 Project Status
+# Project Status
 
 **Status: Functional**
 
@@ -450,7 +450,7 @@ The current application supports:
 
 ---
 
-# 👨‍💻 Author
+# Author
 
 **T. Mahesh Goud**
 
@@ -461,7 +461,7 @@ https://github.com/thallapallymahesh
 
 ---
 
-## ⭐ Technologies & Open-Source Components
+## Technologies & Open-Source Components
 
 This project uses open-source technologies including:
 
@@ -476,6 +476,6 @@ This project uses open-source technologies including:
 
 ---
 
-## 📄 License
+## License
 
 This project is intended for educational, portfolio, and demonstration purposes.
