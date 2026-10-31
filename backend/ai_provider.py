@@ -86,6 +86,8 @@ def create_embeddings(texts):
                         {
                             "model": f"models/{AI_EMBEDDING_MODEL}",
                             "content": {"parts": [{"text": text}]},
+                            # Keep pgvector dimensions aligned with the Supabase migration.
+                            "outputDimensionality": 768,
                         }
                         for text in batch
                     ]

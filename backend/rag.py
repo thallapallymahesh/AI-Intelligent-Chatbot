@@ -1,18 +1,20 @@
 import os
 import uuid
-import chromadb
 from backend.ai_provider import create_embeddings as provider_create_embeddings
+from backend import supabase_store
 
 from pypdf import PdfReader
 from docx import Document
 
-# Persistent vector database
+# Chroma is retained for local development; production with Supabase uses pgvector.
 DATA_DIR = os.getenv("APP_DATA_DIR", "./backend")
 CHROMA_DIR = os.getenv("CHROMA_DIR", os.path.join(DATA_DIR, "chroma_db"))
-os.makedirs(CHROMA_DIR, exist_ok=True)
-chroma_client = chromadb.PersistentClient(path=CHROMA_DIR)
-
-collection = chroma_client.get_or_create_collection(name="documents")
+collection = None
+if not supabase_store.configured():
+    import chromadb
+    os.makedirs(CHROMA_DIR, exist_ok=True)
+    chroma_client = chromadb.PersistentClient(path=CHROMA_DIR)
+    collection = chroma_client.get_or_create_collection(name="documents")
 
 
 def extract_text(file_path):
@@ -81,7 +83,7 @@ def create_embeddings(texts):
     return provider_create_embeddings(texts)
 
 
-def index_document(file_path, filename, chat_id, document_id):
+def index_document(file_path, filename, chat_id, document_id, owner_id=None):
     """
     Process and store a document in ChromaDB.
     """
@@ -94,6 +96,12 @@ def index_document(file_path, filename, chat_id, document_id):
     chunks = chunk_text(text)
 
     embeddings = create_embeddings(chunks)
+
+    if owner_id and supabase_store.configured():
+        supabase_store.insert_document_chunks(
+            owner_id, chat_id, document_id, filename, chunks, embeddings
+        )
+        return {"filename": filename, "chunks": len(chunks)}
 
     ids = [str(uuid.uuid4()) for _ in chunks]
 
@@ -114,16 +122,26 @@ def index_document(file_path, filename, chat_id, document_id):
     return {"filename": filename, "chunks": len(chunks)}
 
 
-def remove_document_chunks(document_id):
+def remove_document_chunks(document_id, owner_id=None):
+    if owner_id and supabase_store.configured():
+        return supabase_store.remove_document_chunks(document_id, owner_id)
     collection.delete(where={"document_id": document_id})
 
 
-def search_documents(query, chat_id, top_k=3):
+def search_documents(query, chat_id, top_k=3, owner_id=None):
     """
     Find relevant document chunks for a user question.
     """
 
     query_embedding = create_embeddings([query])[0]
+
+    if owner_id and supabase_store.configured():
+        matches = supabase_store.search_document_chunks(
+            owner_id, chat_id, query_embedding, top_k
+        )
+        return [{"text": row["content"], "document_id": row["document_id"],
+                 "filename": row["filename"], "chunk": row["chunk_index"]}
+                for row in matches]
 
     results = collection.query(
         query_embeddings=[query_embedding],

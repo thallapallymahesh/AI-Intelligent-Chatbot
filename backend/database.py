@@ -342,3 +342,17 @@ def delete_document(document_id):
 
     conn.commit()
     conn.close()
+
+
+def delete_chat(chat_id):
+    conn = get_connection()
+    conn.execute("DELETE FROM chats WHERE id = ?", (chat_id,))
+    conn.commit()
+    conn.close()
+
+
+def delete_all_chats():
+    conn = get_connection()
+    conn.execute("DELETE FROM chats")
+    conn.commit()
+    conn.close()

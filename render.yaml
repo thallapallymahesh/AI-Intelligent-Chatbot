@@ -22,5 +22,13 @@ services:
         value: gemini-embedding-2
       # Public demo API; no cookies or credentialed CORS requests are used.
       - key: CORS_ORIGINS
-        value: "*"
-      # Add AI_API_KEY in the dashboard; never commit it to this file.
+        value: https://ai-intelligent-chatbot.vercel.app
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      # Set this secret only if a valid free-tier Gemini API key is available.
+      - key: AI_API_KEY
+        sync: false
