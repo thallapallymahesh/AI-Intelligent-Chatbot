@@ -52,6 +52,8 @@ backend/chroma_db/
 
 # Local uploaded documents
 documents/
+backend/uploads/
+data/
 
 # ==============================
 # Editor / IDE

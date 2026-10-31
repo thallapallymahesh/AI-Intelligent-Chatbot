@@ -155,7 +155,7 @@ python -m venv venv
 ## 3. Install Backend Dependencies
 
 ```powershell
-pip install -r requirements.txt
+pip install -r backend/requirements.txt
 ```
 
 ## 4. Install Ollama
@@ -381,6 +381,32 @@ The project includes testing for important functionality such as:
 - Oversized file handling
 
 The project also includes backend syntax/dependency checks and frontend build/lint validation.
+
+---
+
+# Cloud Deployment Preparation
+
+The repository includes `render.yaml` for the FastAPI service and `frontend/vercel.json` for the Vite static site. Connect the GitHub repository to Render and Vercel, set the Vercel project root to `frontend`, and set `VITE_API_URL` in Vercel to the HTTPS URL assigned to the Render API. The Vercel build command is `npm run build` and the output directory is `dist`.
+
+The Render service requires a persistent disk mounted at `/var/data`; the blueprint stores SQLite, ChromaDB, and uploaded files under that path. Render's free web services do not support persistent disks, so the included Render service and disk require paid hosting. Do not create the service until you have reviewed its current price in your Render account.
+
+Configure these Render environment variables:
+
+| Variable | Value |
+| --- | --- |
+| `APP_DATA_DIR` | `/var/data` |
+| `AI_PROVIDER` | `openai` for a compatible hosted provider, or `ollama` for a reachable remote Ollama server |
+| `AI_API_BASE_URL` | Provider's OpenAI-compatible API base URL |
+| `AI_API_KEY` | Secret key stored only in Render's environment settings |
+| `AI_CHAT_MODEL` | A chat model available to that provider |
+| `AI_EMBEDDING_MODEL` | An embedding model available to the same provider |
+| `CORS_ORIGINS` | Exact Vercel production origin, such as `https://your-project.vercel.app` |
+
+The hosted API must support both OpenAI-compatible `/chat/completions` streaming and `/embeddings`; some inference services only offer chat. Provider requests can incur usage charges. Ollama remains available for local development; a Render service cannot reach Ollama on a private Windows computer. See `backend/.env.example` for local settings.
+
+## Public access limitation
+
+This application currently has no user accounts or authorization. Chat IDs and document data are not protected between users, and the chat-list endpoint returns all chats. Do not put private or sensitive documents in a public deployment until authentication and per-user access controls are added. The current deployment configuration is suitable only for a controlled demo with non-sensitive data.
 
 ---
 

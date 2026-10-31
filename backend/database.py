@@ -1,10 +1,14 @@
 import json
+import os
 import sqlite3
+from pathlib import Path
 
-DB_PATH = "backend/chatbot.db"
+DATA_DIR = os.getenv("APP_DATA_DIR", "./backend")
+DB_PATH = os.getenv("DATABASE_PATH", str(Path(DATA_DIR) / "chatbot.db"))
 
 
 def get_connection():
+    Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     conn.execute("PRAGMA foreign_keys = ON")
     return conn

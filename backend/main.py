@@ -1,6 +1,6 @@
 import json
 import logging
-import ollama
+import os
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import StreamingResponse
@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from backend.rag import index_document, remove_document_chunks, search_documents
+from backend.ai_provider import provider_health, stream_chat
 from backend.chat_memory import RECENT_MESSAGE_LIMIT, build_chat_messages
 from backend.database import (
     init_db,
@@ -41,15 +42,18 @@ logger = logging.getLogger(__name__)
 # CORS
 # --------------------------------------------------
 
+cors_origins = [
+    origin.strip()
+    for origin in os.getenv(
+        "CORS_ORIGINS",
+        "http://localhost:5173,http://localhost:5174,http://localhost:5175,http://localhost:5176",
+    ).split(",")
+    if origin.strip()
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://localhost:5174",
-        "http://localhost:5175",
-        "http://localhost:5176",
-        "https://ai-intelligent-chatbot.vercel.app",
-    ],
+    allow_origins=cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -85,34 +89,14 @@ def root():
 @app.get("/api/health")
 def health_check():
     try:
-        response = ollama.list()
-        models = getattr(response, "models", None)
-        if models is None:
-            models = response.get("models", [])
-
-        model_names = {
-            (getattr(model, "model", None) or model.get("model", "")).split(":")[0]
-            for model in models
-        }
-        chat_model_available = "llama3.2" in model_names
-        embedding_model_available = "nomic-embed-text" in model_names
-        status = "healthy" if chat_model_available and embedding_model_available else "degraded"
-
-        return {
-            "status": status,
-            "backend": "available",
-            "ollama": "available",
-            "chat_model": "available" if chat_model_available else "missing",
-            "embedding_model": "available" if embedding_model_available else "missing",
-        }
+        return {"backend": "available", **provider_health()}
     except Exception:
-        logger.exception("Ollama health check failed")
+        logger.exception("AI provider health check failed")
         return {
             "status": "degraded",
             "backend": "available",
-            "ollama": "unavailable",
-            "chat_model": "unknown",
-            "embedding_model": "unknown",
+            "provider": os.getenv("AI_PROVIDER", "ollama"),
+            "ai": "unavailable or misconfigured",
         }
 
 
@@ -130,7 +114,8 @@ async def upload_document(
         raise HTTPException(status_code=404, detail="Chat not found.")
 
     try:
-        stored_upload = await save_and_validate_upload(file, "documents/uploads")
+        upload_dir = os.path.join(os.getenv("APP_DATA_DIR", "documents"), "uploads")
+        stored_upload = await save_and_validate_upload(file, upload_dir)
     except UploadValidationError as error:
         raise HTTPException(status_code=error.status_code, detail=str(error))
 
@@ -252,12 +237,7 @@ def chat(request: ChatRequest):
         full_response = ""
 
         try:
-            response = ollama.chat(
-                model="llama3.2", messages=ollama_messages, stream=True
-            )
-
-            for part in response:
-                text = part["message"]["content"]
+            for text in stream_chat(ollama_messages):
                 full_response += text
                 yield json.dumps({"token": text}) + "\n"
         except Exception:
@@ -265,7 +245,7 @@ def chat(request: ChatRequest):
             if full_response:
                 add_message(chat_id, "assistant", full_response, json.dumps(sources))
             yield json.dumps(
-                {"error": "AI response failed. Check that Ollama and llama3.2 are running."}
+                {"error": "AI response failed. Check the configured AI provider and model settings."}
             ) + "\n"
             return
 

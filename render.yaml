@@ -1,0 +1,31 @@
+services:
+  - type: web
+    name: ai-intelligent-chatbot-api
+    runtime: python
+    plan: free
+    buildCommand: pip install -r backend/requirements.txt
+    startCommand: uvicorn backend.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/health
+    disk:
+      name: chatbot-data
+      mountPath: /var/data
+      sizeGB: 10
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.11
+      # Render Free has an ephemeral filesystem; data may be lost on restart,
+      # redeploy, or spin-down. This path keeps runtime data out of the repo.
+      - key: APP_DATA_DIR
+        value: /tmp/chatbot-data
+      - key: AI_PROVIDER
+        sync: false
+      - key: AI_API_BASE_URL
+        sync: false
+      - key: AI_API_KEY
+        sync: false
+      - key: AI_CHAT_MODEL
+        sync: false
+      - key: AI_EMBEDDING_MODEL
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false

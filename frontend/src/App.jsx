@@ -1,7 +1,9 @@
 import { useState, useEffect } from "react";
 import "./App.css";
 
-const API_URL = "http://127.0.0.1:8000";
+const API_URL =
+  import.meta.env.VITE_API_URL ||
+  (import.meta.env.DEV ? "http://127.0.0.1:8000" : "");
 
 function App() {
   // --------------------------------------------------
@@ -29,7 +31,9 @@ function App() {
     try {
       const response = await fetch(`${API_URL}/api/health`);
       const data = await response.json();
-      setServiceStatus(response.ok && data.status === "healthy" ? "online" : "degraded");
+      setServiceStatus(
+        response.ok && data.status === "healthy" ? "online" : "degraded",
+      );
     } catch {
       setServiceStatus("offline");
     }
@@ -290,7 +294,9 @@ function App() {
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.detail || `Backend request failed (${response.status}).`);
+        throw new Error(
+          errorData.detail || `Backend request failed (${response.status}).`,
+        );
       }
 
       if (!response.body) {
@@ -385,7 +391,10 @@ function App() {
                 const updated = [...prev];
                 const lastIndex = updated.length - 1;
                 if (lastIndex >= 0 && updated[lastIndex].role === "assistant") {
-                  updated[lastIndex] = { ...updated[lastIndex], content: data.error };
+                  updated[lastIndex] = {
+                    ...updated[lastIndex],
+                    content: data.error,
+                  };
                 }
                 return updated;
               });
@@ -443,7 +452,10 @@ function App() {
               const updated = [...prev];
               const lastIndex = updated.length - 1;
               if (lastIndex >= 0 && updated[lastIndex].role === "assistant") {
-                updated[lastIndex] = { ...updated[lastIndex], content: data.error };
+                updated[lastIndex] = {
+                  ...updated[lastIndex],
+                  content: data.error,
+                };
               }
               return updated;
             });

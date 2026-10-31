@@ -1,13 +1,16 @@
 import os
 import uuid
-import ollama
 import chromadb
+from backend.ai_provider import create_embeddings as provider_create_embeddings
 
 from pypdf import PdfReader
 from docx import Document
 
 # Persistent vector database
-chroma_client = chromadb.PersistentClient(path="./backend/chroma_db")
+DATA_DIR = os.getenv("APP_DATA_DIR", "./backend")
+CHROMA_DIR = os.getenv("CHROMA_DIR", os.path.join(DATA_DIR, "chroma_db"))
+os.makedirs(CHROMA_DIR, exist_ok=True)
+chroma_client = chromadb.PersistentClient(path=CHROMA_DIR)
 
 collection = chroma_client.get_or_create_collection(name="documents")
 
@@ -75,9 +78,7 @@ def create_embeddings(texts):
     Generate embeddings using Ollama.
     """
 
-    response = ollama.embed(model="nomic-embed-text", input=texts)
-
-    return response["embeddings"]
+    return provider_create_embeddings(texts)
 
 
 def index_document(file_path, filename, chat_id, document_id):
