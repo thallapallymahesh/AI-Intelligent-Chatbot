@@ -16,6 +16,9 @@ AI_API_BASE_URL = os.getenv("AI_API_BASE_URL", "https://api.openai.com/v1").rstr
 AI_API_KEY = os.getenv("AI_API_KEY", "")
 AI_CHAT_MODEL = os.getenv("AI_CHAT_MODEL", "llama3.2")
 AI_EMBEDDING_MODEL = os.getenv("AI_EMBEDDING_MODEL", "nomic-embed-text")
+GEMINI_API_BASE_URL = os.getenv(
+    "AI_API_BASE_URL", "https://generativelanguage.googleapis.com/v1beta"
+).rstrip("/")
 
 
 class ProviderConfigurationError(RuntimeError):
@@ -23,10 +26,28 @@ class ProviderConfigurationError(RuntimeError):
 
 
 def _check_provider():
-    if AI_PROVIDER not in {"ollama", "openai"}:
-        raise ProviderConfigurationError("AI_PROVIDER must be 'ollama' or 'openai'.")
-    if AI_PROVIDER == "openai" and not AI_API_KEY:
-        raise ProviderConfigurationError("AI_API_KEY is required when AI_PROVIDER=openai.")
+    if AI_PROVIDER not in {"ollama", "openai", "gemini"}:
+        raise ProviderConfigurationError("AI_PROVIDER must be 'ollama', 'openai', or 'gemini'.")
+    if AI_PROVIDER in {"openai", "gemini"} and not AI_API_KEY:
+        raise ProviderConfigurationError(f"AI_API_KEY is required when AI_PROVIDER={AI_PROVIDER}.")
+
+
+def _gemini_request(path, payload, timeout=120):
+    _check_provider()
+    request = Request(
+        f"{GEMINI_API_BASE_URL}{path}",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json", "x-goog-api-key": AI_API_KEY},
+    )
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except HTTPError as error:
+        detail = error.read().decode("utf-8", errors="replace")[:500]
+        logger.warning("Gemini request returned HTTP %s: %s", error.code, detail)
+        raise RuntimeError(f"Gemini request failed (HTTP {error.code}).") from error
+    except (URLError, TimeoutError) as error:
+        raise RuntimeError("Unable to connect to the configured Gemini API.") from error
 
 
 def _request_json(path, payload=None, timeout=60):
@@ -54,6 +75,25 @@ def create_embeddings(texts):
         else:  # Compatibility with lightweight Ollama adapters used in tests.
             response = ollama.embed(model=AI_EMBEDDING_MODEL, input=texts)
         return response["embeddings"]
+    if AI_PROVIDER == "gemini":
+        embeddings = []
+        for offset in range(0, len(texts), 100):
+            batch = texts[offset : offset + 100]
+            response = _gemini_request(
+                f"/models/{AI_EMBEDDING_MODEL}:batchEmbedContents",
+                {
+                    "requests": [
+                        {
+                            "model": f"models/{AI_EMBEDDING_MODEL}",
+                            "content": {"parts": [{"text": text}]},
+                        }
+                        for text in batch
+                    ]
+                },
+            )
+            embeddings.extend(item["values"] for item in response["embeddings"])
+        return embeddings
+
     response = _request_json(
         "/embeddings",
         {"model": AI_EMBEDDING_MODEL, "input": texts},
@@ -69,6 +109,47 @@ def stream_chat(messages):
             part["message"]["content"]
             for part in client.chat(model=AI_CHAT_MODEL, messages=messages, stream=True)
         )
+
+    if AI_PROVIDER == "gemini":
+        _check_provider()
+        system_messages = [item["content"] for item in messages if item.get("role") == "system"]
+        contents = [
+            {
+                "role": "model" if item.get("role") == "assistant" else "user",
+                "parts": [{"text": item["content"]}],
+            }
+            for item in messages
+            if item.get("role") in {"user", "assistant"}
+        ]
+        payload = {"contents": contents}
+        if system_messages:
+            payload["systemInstruction"] = {"parts": [{"text": "\n\n".join(system_messages)}]}
+        request = Request(
+            f"{GEMINI_API_BASE_URL}/models/{AI_CHAT_MODEL}:streamGenerateContent?alt=sse",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json", "x-goog-api-key": AI_API_KEY},
+        )
+
+        def gemini_tokens():
+            try:
+                with urlopen(request, timeout=180) as response:
+                    for raw_line in response:
+                        line = raw_line.decode("utf-8", errors="replace").strip()
+                        if not line.startswith("data:"):
+                            continue
+                        event = json.loads(line[5:].strip())
+                        parts = event.get("candidates", [{}])[0].get("content", {}).get("parts", [])
+                        for part in parts:
+                            if part.get("text"):
+                                yield part["text"]
+            except HTTPError as error:
+                detail = error.read().decode("utf-8", errors="replace")[:500]
+                logger.warning("Gemini chat returned HTTP %s: %s", error.code, detail)
+                raise RuntimeError(f"Gemini chat failed (HTTP {error.code}).") from error
+            except (URLError, TimeoutError) as error:
+                raise RuntimeError("Unable to connect to the configured Gemini API.") from error
+
+        return gemini_tokens()
 
     _check_provider()
     payload = {"model": AI_CHAT_MODEL, "messages": messages, "stream": True}
@@ -118,6 +199,15 @@ def provider_health():
             "provider": "ollama",
             "chat_model": "available" if chat_ready else "missing",
             "embedding_model": "available" if embedding_ready else "missing",
+        }
+
+    if AI_PROVIDER == "gemini":
+        _check_provider()
+        return {
+            "status": "configured",
+            "provider": "gemini",
+            "chat_model": AI_CHAT_MODEL,
+            "embedding_model": AI_EMBEDDING_MODEL,
         }
 
     return {

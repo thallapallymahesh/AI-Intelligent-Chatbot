@@ -32,7 +32,9 @@ function App() {
       const response = await fetch(`${API_URL}/api/health`);
       const data = await response.json();
       setServiceStatus(
-        response.ok && data.status === "healthy" ? "online" : "degraded",
+        response.ok && ["healthy", "configured"].includes(data.status)
+          ? "online"
+          : "degraded",
       );
     } catch {
       setServiceStatus("offline");

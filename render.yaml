@@ -6,26 +6,21 @@ services:
     buildCommand: pip install -r backend/requirements.txt
     startCommand: uvicorn backend.main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /api/health
-    disk:
-      name: chatbot-data
-      mountPath: /var/data
-      sizeGB: 10
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.11
-      # Render Free has an ephemeral filesystem; data may be lost on restart,
-      # redeploy, or spin-down. This path keeps runtime data out of the repo.
+      # Render Free storage is ephemeral; uploads, SQLite, and Chroma data can be lost on restart.
       - key: APP_DATA_DIR
         value: /tmp/chatbot-data
       - key: AI_PROVIDER
-        sync: false
+        value: gemini
       - key: AI_API_BASE_URL
-        sync: false
-      - key: AI_API_KEY
-        sync: false
+        value: https://generativelanguage.googleapis.com/v1beta
       - key: AI_CHAT_MODEL
-        sync: false
+        value: gemini-3.5-flash-lite
       - key: AI_EMBEDDING_MODEL
-        sync: false
+        value: gemini-embedding-2
+      # Public demo API; no cookies or credentialed CORS requests are used.
       - key: CORS_ORIGINS
-        sync: false
+        value: "*"
+      # Add AI_API_KEY in the dashboard; never commit it to this file.
