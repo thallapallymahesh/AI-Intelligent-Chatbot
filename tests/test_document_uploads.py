@@ -12,6 +12,7 @@ import unittest
 from unittest import mock
 
 from backend import database
+from backend import ai_provider
 from docx import Document
 from pypdf import PdfWriter
 from backend.upload_utils import (
@@ -54,6 +55,7 @@ class FakeCollection:
                         "document_id": 9,
                         "filename": "selected.txt",
                         "chunk": 0,
+                        "page": 2,
                     }
                 ]
             ],
@@ -118,6 +120,17 @@ class DocumentUploadTests(unittest.TestCase):
             stored = asyncio.run(save_and_validate_upload(upload, self.upload_directory))
             self.assertTrue(stored.file_path.exists())
             cleanup_upload(stored.file_path)
+
+    def test_pdf_extraction_keeps_one_based_source_page_numbers(self):
+        from backend import rag
+
+        fake_reader = types.SimpleNamespace(pages=[
+            types.SimpleNamespace(extract_text=lambda: "First page"),
+            types.SimpleNamespace(extract_text=lambda: "Second page"),
+        ])
+        with mock.patch.object(rag, "PdfReader", return_value=fake_reader):
+            pages = rag.extract_pages("manual.pdf")
+        self.assertEqual(pages, [(1, "First page"), (2, "Second page")])
 
     def test_invalid_file_contents_are_rejected_and_cleaned_up(self):
         upload = AsyncUpload("not-a-pdf.pdf", b"This is not a PDF")
@@ -189,19 +202,26 @@ class DocumentUploadTests(unittest.TestCase):
             with mock.patch.dict(
                 sys.modules,
                 {"ollama": fake_ollama, "chromadb": fake_chromadb},
-            ):
+            ), mock.patch.object(ai_provider, "ollama", fake_ollama):
                 rag = importlib.import_module("backend.rag")
                 text_path = Path(self.temporary_directory.name) / "chat-two.txt"
                 text_path.write_text("Chat two private document text.", encoding="utf-8")
 
                 result = rag.index_document(text_path, "chat-two.txt", 2, 9)
                 sources = rag.search_documents("private", 2)
+                with mock.patch.object(rag, "extract_pages", return_value=[
+                    (1, "First page source text."), (3, "Third page source text."),
+                ]):
+                    rag.index_document(text_path, "pages.pdf", 2, 10)
 
             self.assertEqual(result["chunks"], 1)
             self.assertEqual(collection.add_calls[0]["metadatas"][0]["chat_id"], 2)
             self.assertEqual(collection.add_calls[0]["metadatas"][0]["document_id"], 9)
             self.assertEqual(collection.query_calls[0]["where"], {"chat_id": 2})
             self.assertEqual(sources[0]["document_id"], 9)
+            self.assertEqual(sources[0]["page"], 2)
+            self.assertEqual(collection.add_calls[1]["metadatas"][0]["page"], 1)
+            self.assertEqual(collection.add_calls[1]["metadatas"][1]["page"], 3)
         finally:
             sys.modules.pop("backend.rag", None)
             if original_rag is not None:

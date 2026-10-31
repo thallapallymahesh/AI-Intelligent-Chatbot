@@ -50,6 +50,22 @@ def extract_text(file_path):
         raise ValueError("Unsupported file type. " "Use PDF, DOCX or TXT.")
 
 
+def extract_pages(file_path):
+    """Return text units with source page numbers when the format has pages."""
+    extension = os.path.splitext(file_path)[1].lower()
+    if extension == ".pdf":
+        reader = PdfReader(file_path)
+        return [(number, page.extract_text() or "")
+                for number, page in enumerate(reader.pages, start=1)]
+    if extension == ".docx":
+        document = Document(file_path)
+        return [(None, "\n".join(paragraph.text for paragraph in document.paragraphs))]
+    if extension == ".txt":
+        with open(file_path, "r", encoding="utf-8") as source:
+            return [(None, source.read())]
+    raise ValueError("Unsupported file type. Use PDF, DOCX or TXT.")
+
+
 def chunk_text(text, chunk_size=800, overlap=100):
     """
     Split document text into smaller chunks.
@@ -88,18 +104,19 @@ def index_document(file_path, filename, chat_id, document_id, owner_id=None):
     Process and store a document in ChromaDB.
     """
 
-    text = extract_text(file_path)
-
-    if not text.strip():
+    pages = extract_pages(file_path)
+    if not any(text.strip() for _, text in pages):
         raise ValueError("No readable text found in the document.")
-
-    chunks = chunk_text(text)
+    chunk_records = [(chunk, page_number) for page_number, text in pages
+                     for chunk in chunk_text(text)]
+    chunks = [chunk for chunk, _ in chunk_records]
+    page_numbers = [page_number for _, page_number in chunk_records]
 
     embeddings = create_embeddings(chunks)
 
     if owner_id and supabase_store.configured():
         supabase_store.insert_document_chunks(
-            owner_id, chat_id, document_id, filename, chunks, embeddings
+            owner_id, chat_id, document_id, filename, chunks, embeddings, page_numbers
         )
         return {"filename": filename, "chunks": len(chunks)}
 
@@ -111,6 +128,7 @@ def index_document(file_path, filename, chat_id, document_id, owner_id=None):
             "document_id": document_id,
             "filename": filename,
             "chunk": index,
+            **({"page": page_numbers[index]} if page_numbers[index] else {}),
         }
         for index in range(len(chunks))
     ]
@@ -140,7 +158,8 @@ def search_documents(query, chat_id, top_k=3, owner_id=None):
             owner_id, chat_id, query_embedding, top_k
         )
         return [{"text": row["content"], "document_id": row["document_id"],
-                 "filename": row["filename"], "chunk": row["chunk_index"]}
+                 "filename": row["filename"], "chunk": row["chunk_index"],
+                 "page": row.get("page_number")}
                 for row in matches]
 
     results = collection.query(
@@ -162,6 +181,7 @@ def search_documents(query, chat_id, top_k=3, owner_id=None):
                 "document_id": metadata.get("document_id"),
                 "filename": metadata.get("filename", "Unknown"),
                 "chunk": metadata.get("chunk", 0),
+                "page": metadata.get("page"),
             }
         )
 

@@ -10,8 +10,15 @@ The application combines a **React + Vite frontend**, **FastAPI backend**, **Oll
 
 - 🤖 AI-powered conversational chat
 - 💬 Persistent chat history
+- 🔐 Supabase Auth with registration, login, email verification, and password reset
+- 👤 Owner-scoped conversations, documents, embeddings, and account deletion
+- 🔍 Chat title search, archive/restore, rename, and delete
+- ⏹️ Stop/regenerate responses, copy answers, and submit feedback
 - 🧠 Chat-specific conversational memory
-- 📄 PDF, DOCX, and TXT document upload
+- 📄 Multi-file PDF, DOCX, and TXT upload with document management
+- 🧾 PDF page citations and DOCX/TXT chunk citations
+- 📝 Document summary, key-point, and quiz actions
+- 📤 Personal chat-history JSON export
 - 🔎 Retrieval-Augmented Generation (RAG)
 - 📚 Question answering from uploaded documents
 - 🔗 Source/citation display
@@ -45,18 +52,17 @@ The application combines a **React + Vite frontend**, **FastAPI backend**, **Oll
 └───────┬───────────┬──────────┘
         │           │
         ▼           ▼
-┌────────────┐ ┌──────────────┐
-│   SQLite   │ │   ChromaDB   │
-│            │ │              │
-│ Chats      │ │ Embeddings   │
-│ Messages   │ │ Retrieval    │
-│ Documents  │ │ Vector Store │
-└────────────┘ └──────┬───────┘
+┌────────────────────┐ ┌──────────────┐
+│ Supabase Postgres  │ │   pgvector   │
+│ Auth • RLS • Chats │ │ Embeddings   │
+│ Messages • Docs    │ │ Retrieval    │
+└────────────────────┘ └──────┬───────┘
                       │
                       ▼
               ┌────────────────┐
-              │     Ollama      │
-              │    Llama 3.2    │
+              │ Hosted Gemini  │
+              │   or Ollama    │
+              │    Llama 3.2   │
               │                │
               │ nomic-embed-   │
               │ text embeddings│
@@ -80,7 +86,8 @@ The application combines a **React + Vite frontend**, **FastAPI backend**, **Oll
 - Python
 - FastAPI
 - Uvicorn
-- SQLite
+- Supabase Auth/PostgreSQL/Storage for hosted multi-user deployments
+- SQLite and ChromaDB for local single-user development
 
 ### AI / LLM
 
@@ -110,8 +117,11 @@ AI-Intelligent-Chatbot/
 ├── backend/
 │   ├── main.py
 │   ├── database.py
+│   ├── auth.py
+│   ├── supabase_store.py
 │   ├── rag.py
 │   └── chroma_db/
+├── supabase/migrations/
 │
 ├── frontend/
 │   ├── src/
@@ -187,7 +197,9 @@ You should have the required Llama and embedding models available.
 
 ---
 
-# Running the Application
+# Running Locally
+
+Ollama remains supported locally. To run the browser UI without Supabase, set a random `LOCAL_DEV_TOKEN` in the backend environment and the same value as `VITE_LOCAL_DEV_TOKEN` in `frontend/.env.local`; set `LOCAL_DEV_AUTH=true` and `VITE_LOCAL_AUTH=true`. This single-user shortcut is for local development only. Hosted auth uses Supabase.
 
 The application uses three components:
 
@@ -287,7 +299,7 @@ Ask follow-up questions in the same chat to continue the conversation with its s
 
 ### 6. Reopen Previous Chats
 
-Previous conversations remain available after refreshing the browser and reopening the application.
+Hosted conversations are tied to the authenticated user and restore after sign-in. Local SQLite/Chroma data is stored only on that machine.
 
 ---
 
@@ -304,7 +316,7 @@ Text Processing
       ↓
 Embedding Generation
       ↓
-ChromaDB Vector Storage
+Supabase pgvector (hosted) / ChromaDB (local)
       ↓
 User Question
       ↓
@@ -327,7 +339,7 @@ RAG allows the chatbot to retrieve relevant information from uploaded documents 
 
 The application stores important application data so conversations can survive browser refreshes and backend restarts.
 
-Persisted information includes:
+When Supabase is configured, persisted information includes:
 
 - Chat records
 - Messages
@@ -335,7 +347,7 @@ Persisted information includes:
 - RAG source information
 - Conversation history
 
-Documents are associated with their relevant chats to prevent unrelated conversations from accessing another chat's document context.
+Documents are associated with the verified owner and chat. Backend queries filter by that owner; SQL RLS and a private Storage bucket provide additional controls. Render's filesystem is temporary; configure Supabase before using the public app.
 
 ---
 
@@ -346,10 +358,18 @@ Documents are associated with their relevant chats to prevent unrelated conversa
 | GET    | `/`                    | API status               |
 | GET    | `/api/health`          | Backend health check     |
 | GET    | `/api/chats`           | Retrieve chat history    |
+| GET    | `/api/chats?archived=true` | List archived chats   |
 | GET    | `/api/chats/{chat_id}` | Retrieve a specific chat |
+| PATCH  | `/api/chats/{chat_id}` | Rename or archive/restore a chat |
+| DELETE | `/api/chats/{chat_id}` | Delete chat and its documents |
+| GET    | `/api/chats/{chat_id}/documents` | List chat documents |
+| DELETE | `/api/chats/{chat_id}/documents/{document_id}` | Remove a document |
+| GET    | `/api/chats/export` | Export the signed-in user's history |
 | POST   | `/api/new-chat`        | Create a new chat        |
 | POST   | `/api/chat`            | Send a chat message      |
+| POST   | `/api/chat/stop`       | Stop a running generation |
 | POST   | `/api/upload`          | Upload a document        |
+| DELETE | `/api/account`         | Delete authenticated account and owned data |
 
 Interactive API documentation:
 
@@ -361,13 +381,15 @@ http://127.0.0.1:8000/docs
 
 # Testing
 
-Run the automated tests with:
+Run the backend tests with:
 
 ```powershell
-pytest
+python -m unittest discover -s tests -v
 ```
 
-The project includes testing for important functionality such as:
+Tests cover authentication checks, owner query filters, chat memory, archive/feedback, per-user throttling, upload validation, PDF page metadata, and RAG chat scoping. Run `npm run build` and `npm run lint` from `frontend` for frontend verification.
+
+The suite includes testing for functionality such as:
 
 - Chat memory
 - Chat persistence
@@ -384,35 +406,43 @@ The project also includes backend syntax/dependency checks and frontend build/li
 
 ---
 
-# Cloud Deployment Preparation
+# Free Cloud Deployment Setup
 
-The repository includes `render.yaml` for the FastAPI service and `frontend/vercel.json` for the Vite static site. Connect the GitHub repository to Render and Vercel, set the Vercel project root to `frontend`, and set `VITE_API_URL` in Vercel to the HTTPS URL assigned to the Render API. The Vercel build command is `npm run build` and the output directory is `dist`.
-
-The Render service requires a persistent disk mounted at `/var/data`; the blueprint stores SQLite, ChromaDB, and uploaded files under that path. Render's free web services do not support persistent disks, so the included Render service and disk require paid hosting. Do not create the service until you have reviewed its current price in your Render account.
-
-Configure these Render environment variables:
+Connect this repository to Render and Vercel. Set the Vercel project root to `frontend`; the build command is `npm run build` and output directory is `dist`. Set these Vercel Production variables, then redeploy:
 
 | Variable | Value |
 | --- | --- |
-| `APP_DATA_DIR` | `/var/data` |
-| `AI_PROVIDER` | `openai` for a compatible hosted provider, or `ollama` for a reachable remote Ollama server |
-| `AI_API_BASE_URL` | Provider's OpenAI-compatible API base URL |
-| `AI_API_KEY` | Secret key stored only in Render's environment settings |
-| `AI_CHAT_MODEL` | A chat model available to that provider |
-| `AI_EMBEDDING_MODEL` | An embedding model available to the same provider |
-| `CORS_ORIGINS` | Exact Vercel production origin, such as `https://your-project.vercel.app` |
+| `VITE_API_URL` | `https://<your-render-service>.onrender.com` |
+| `VITE_SUPABASE_URL` | Supabase project URL |
+| `VITE_SUPABASE_ANON_KEY` | Supabase publishable/anon key (never use service-role here) |
 
-The hosted API must support both OpenAI-compatible `/chat/completions` streaming and `/embeddings`; some inference services only offer chat. Provider requests can incur usage charges. Ollama remains available for local development; a Render service cannot reach Ollama on a private Windows computer. See `backend/.env.example` for local settings.
+Create a Supabase project on its free tier, then execute the SQL migrations in Supabase SQL Editor in filename order:
 
-## Public access limitation
+1. `supabase/migrations/20261031000000_multi_user_chat.sql`
+2. `supabase/migrations/20261031100000_professional_chat_features.sql`
 
-This application currently has no user accounts or authorization. Chat IDs and document data are not protected between users, and the chat-list endpoint returns all chats. Do not put private or sensitive documents in a public deployment until authentication and per-user access controls are added. The current deployment configuration is suitable only for a controlled demo with non-sensitive data.
+Set Render environment variables:
+
+| Variable | Value |
+| --- | --- |
+| `SUPABASE_URL` | Supabase project URL |
+| `SUPABASE_ANON_KEY` | Supabase publishable/anon key |
+| `SUPABASE_SERVICE_ROLE_KEY` | Secret service-role key, stored only in Render |
+| `AI_PROVIDER` | `gemini` for hosted Gemini, or `ollama` for local development |
+| `AI_API_KEY` | Optional Gemini key from a free account; secret stored only in Render |
+| `AI_CHAT_MODEL` | `gemini-3.5-flash-lite` |
+| `AI_EMBEDDING_MODEL` | `gemini-embedding-2` (768 dimensions) |
+| `CORS_ORIGINS` | Exact Vercel origin, e.g. `https://ai-intelligent-chatbot.vercel.app` |
+
+Keep billing disabled. Free quotas and account access vary by provider. Supabase-backed Postgres, vectors, and private document storage persist across Render restarts; Render filesystem is used only for temporary upload processing. Supabase Auth email verification and login throttling follow the project settings. Chat/upload API limits are per account in the running backend process and reset on restart.
+
+PDF citations include page numbers. DOCX/TXT citations use chunk numbers. Summary, key-point, and quiz actions use the configured AI model and retrieved passages, so they share its quota. Voice input and web search are not included: voice behavior varies by browser, and web search requires a separate search provider/API.
 
 ---
 
 # Security & Privacy
 
-This project is primarily intended for local development, learning, portfolio demonstration, and experimentation.
+Hosted data is protected by Supabase Auth, backend token verification, owner-scoped queries, RLS, and private document storage.
 
 - LLM inference can run locally through Ollama.
 - Uploaded documents can be processed locally.
@@ -420,24 +450,22 @@ This project is primarily intended for local development, learning, portfolio de
 - Secrets should be stored in environment variables.
 - `.env` files should remain excluded through `.gitignore`.
 
-For production deployment, consider adding authentication, authorization, HTTPS, secure file storage, rate limiting, monitoring, and additional input validation.
+- Keep `SUPABASE_SERVICE_ROLE_KEY` and Gemini keys only in Render secret settings.
+- Set the Supabase Auth redirect/URL allowlist to the Vercel production origin.
+- Configure exact Vercel CORS origin in Render.
 
 ---
 
 # Future Enhancements
 
-Potential improvements include:
+Optional future work:
 
-- User authentication and authorization
-- Multi-user support
-- Cloud deployment
-- Voice input and output
+- Browser voice input
+- Web search through a separately reviewed search service
 - Image/document vision support
 - Additional LLM providers
-- PostgreSQL support
 - Docker deployment
-- Advanced conversation management
-- Improved document processing
+- Voice input
 - Admin dashboard
 - RAG evaluation and analytics
 
@@ -461,7 +489,7 @@ This project demonstrates the integration of modern AI and full-stack technologi
 
 # Project Status
 
-**Status: Functional**
+**Status: Implemented; hosted use requires Supabase project configuration and an AI provider key.**
 
 The current application supports:
 
@@ -472,6 +500,9 @@ The current application supports:
 - Chat history
 - Persistent source citations
 - Chat-scoped document retrieval
+- Supabase multi-user authentication and owner-scoped persistence
+- Chat search/archive/rename/delete and personal export
+- Generation controls, response feedback, document actions, and PDF page citations
 - Local LLM inference through Ollama
 
 ---

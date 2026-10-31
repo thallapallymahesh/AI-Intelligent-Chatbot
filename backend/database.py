@@ -22,9 +22,14 @@ def init_db():
         CREATE TABLE IF NOT EXISTS chats (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             title TEXT NOT NULL,
+            archived INTEGER NOT NULL DEFAULT 0,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
+
+    chat_columns = {column[1] for column in cursor.execute("PRAGMA table_info(chats)")}
+    if "archived" not in chat_columns:
+        cursor.execute("ALTER TABLE chats ADD COLUMN archived INTEGER NOT NULL DEFAULT 0")
 
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS messages (
@@ -46,6 +51,8 @@ def init_db():
         cursor.execute(
             "ALTER TABLE messages ADD COLUMN sources_json TEXT NOT NULL DEFAULT '[]'"
         )
+    if "feedback" not in message_columns:
+        cursor.execute("ALTER TABLE messages ADD COLUMN feedback INTEGER")
 
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS documents (
@@ -119,15 +126,16 @@ def add_message(chat_id, role, content, sources_json="[]"):
     conn.close()
 
 
-def get_chats():
+def get_chats(archived=False):
     conn = get_connection()
     cursor = conn.cursor()
 
     cursor.execute("""
-        SELECT id, title, created_at
+        SELECT id, title, created_at, archived
         FROM chats
+        WHERE archived = ?
         ORDER BY created_at DESC
-        """)
+        """, (int(archived),))
 
     chats = cursor.fetchall()
 
@@ -164,7 +172,7 @@ def get_messages_with_sources(chat_id):
 
     cursor.execute(
         """
-        SELECT role, content, sources_json
+        SELECT id, role, content, sources_json, feedback
         FROM messages
         WHERE chat_id = ?
         ORDER BY id ASC
@@ -173,7 +181,7 @@ def get_messages_with_sources(chat_id):
     )
 
     messages = []
-    for role, content, sources_json in cursor.fetchall():
+    for message_id, role, content, sources_json, feedback in cursor.fetchall():
         try:
             sources = json.loads(sources_json or "[]")
         except json.JSONDecodeError:
@@ -184,6 +192,8 @@ def get_messages_with_sources(chat_id):
                 "role": role,
                 "content": content,
                 "sources": sources if isinstance(sources, list) else [],
+                "id": message_id,
+                "feedback": feedback,
             }
         )
 
@@ -346,6 +356,8 @@ def delete_document(document_id):
 
 def delete_chat(chat_id):
     conn = get_connection()
+    # Older databases were created without ON DELETE CASCADE for messages.
+    conn.execute("DELETE FROM messages WHERE chat_id = ?", (chat_id,))
     conn.execute("DELETE FROM chats WHERE id = ?", (chat_id,))
     conn.commit()
     conn.close()
@@ -353,6 +365,34 @@ def delete_chat(chat_id):
 
 def delete_all_chats():
     conn = get_connection()
+    conn.execute("DELETE FROM messages")
     conn.execute("DELETE FROM chats")
+    conn.commit()
+    conn.close()
+
+
+def set_chat_archived(chat_id, archived):
+    conn = get_connection()
+    conn.execute("UPDATE chats SET archived = ? WHERE id = ?", (int(archived), chat_id))
+    conn.commit()
+    conn.close()
+
+
+def set_message_feedback(chat_id, message_id, feedback):
+    conn = get_connection()
+    conn.execute("UPDATE messages SET feedback = ? WHERE id = ? AND chat_id = ? AND role = 'assistant'",
+                 (feedback, message_id, chat_id))
+    changed = conn.total_changes > 0
+    conn.commit()
+    conn.close()
+    return changed
+
+
+def delete_last_assistant_message(chat_id):
+    conn = get_connection()
+    row = conn.execute("SELECT id FROM messages WHERE chat_id = ? ORDER BY id DESC LIMIT 1",
+                       (chat_id,)).fetchone()
+    if row:
+        conn.execute("DELETE FROM messages WHERE id = ? AND role = 'assistant'", (row[0],))
     conn.commit()
     conn.close()

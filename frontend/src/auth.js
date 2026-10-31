@@ -35,7 +35,7 @@ export async function signUp(name, email, password) {
 }
 export async function recoverPassword(email) {
   if (localAuth) throw new Error("Password reset is available when Supabase Auth is configured.");
-  return authRequest("recover", { email, redirect_to: window.location.origin });
+  return authRequest(`recover?redirect_to=${encodeURIComponent(window.location.origin)}`, { email });
 }
 export async function updatePassword(password, token) {
   const response = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
@@ -49,8 +49,9 @@ export async function updatePassword(password, token) {
 }
 export async function signOut() {
   const session = readSession();
-  try { if (session?.access_token) await authRequest("logout", undefined, session.access_token); }
-  finally { saveSession(null); }
+  try { if (!localAuth && session?.access_token) await authRequest("logout", undefined, session.access_token); }
+  catch { /* Always clear the browser session even if the remote token expired. */ }
+  saveSession(null);
 }
 export async function accessToken() {
   let session = readSession();

@@ -1,7 +1,10 @@
 import json
 import logging
 import os
+import threading
+import time
 import uuid
+from pathlib import Path
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -20,6 +23,10 @@ from backend.database import (
     create_document as local_create_document, get_document_by_hash as local_get_document_by_hash,
     update_document_chunk_count as local_update_document_chunk_count,
     delete_document as local_delete_document,
+    get_documents as local_get_documents,
+    set_chat_archived as local_set_chat_archived,
+    set_message_feedback as local_set_message_feedback,
+    delete_last_assistant_message as local_delete_last_assistant_message,
 )
 from backend.rag import index_document, remove_document_chunks, search_documents
 from backend.upload_utils import UploadValidationError, cleanup_upload, save_and_validate_upload
@@ -31,16 +38,51 @@ if not store.configured():
 
 origins = [item.strip() for item in os.getenv("CORS_ORIGINS", "http://localhost:5173").split(",") if item.strip()]
 app.add_middleware(CORSMiddleware, allow_origins=origins or ["http://localhost:5173"],
-                   allow_credentials=True, allow_methods=["*"], allow_headers=["Authorization", "Content-Type", "Accept"])
+                   allow_credentials=True, allow_methods=["*"], allow_headers=["Authorization", "Content-Type", "Accept"],
+                   expose_headers=["X-Generation-ID"])
 
 
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=12000)
-    chat_id: str
+    chat_id: str | int
+    regenerate: bool = False
+    action: str = Field(default="chat", pattern="^(chat|summary|key_points|quiz)$")
 
 
 class RenameRequest(BaseModel):
-    title: str = Field(min_length=1, max_length=120)
+    title: str | None = Field(default=None, min_length=1, max_length=120)
+    archived: bool | None = None
+
+
+class ArchiveRequest(BaseModel):
+    archived: bool
+
+
+class FeedbackRequest(BaseModel):
+    feedback: int = Field(ge=-1, le=1)
+
+
+class StopRequest(BaseModel):
+    generation_id: str
+
+
+_limit_lock = threading.Lock()
+_request_times = {}
+_generation_events = {}
+
+
+def enforce_user_limit(user_id, action, limit, window_seconds):
+    now = time.monotonic()
+    key = (user_id, action)
+    with _limit_lock:
+        recent = [stamp for stamp in _request_times.get(key, []) if now - stamp < window_seconds]
+        if len(recent) >= limit:
+            raise HTTPException(status_code=429, detail="Rate limit reached. Please wait and try again.")
+        recent.append(now)
+        _request_times[key] = recent
+        if len(_request_times) > 5000:
+            for old_key in list(_request_times)[:1000]:
+                _request_times.pop(old_key, None)
 
 
 @app.get("/")
@@ -69,10 +111,35 @@ def require_owned_chat(user_id, chat_id):
         raise HTTPException(status_code=404, detail="Chat not found.")
 
 
+def delete_local_document_data(document):
+    remove_document_chunks(document[0])
+    upload_name = Path(document[3]).name
+    upload_roots = {
+        Path(os.getenv("APP_DATA_DIR", "/tmp/chatbot-data")) / "uploads",
+        Path("documents") / "uploads", Path("backend") / "uploads",
+    }
+    for root in upload_roots:
+        (root / upload_name).unlink(missing_ok=True)
+    local_delete_document(document[0])
+
+
+def delete_local_chat_data(chat_id):
+    for document in local_get_documents(chat_id):
+        delete_local_document_data(document)
+    from backend.database import delete_chat as local_delete_chat
+    local_delete_chat(chat_id)
+
+
+def clear_local_chat_data():
+    for chat in local_get_chats(False) + local_get_chats(True):
+        delete_local_chat_data(chat[0])
+
+
 @app.post("/api/upload")
 async def upload_document(chat_id: str = Form(...), file: UploadFile = File(...),
                           user: AuthenticatedUser = Depends(current_user)):
     require_owned_chat(user.id, chat_id)
+    enforce_user_limit(user.id, "upload", int(os.getenv("UPLOADS_PER_HOUR", "20")), 3600)
     upload_dir = os.path.join(os.getenv("APP_DATA_DIR", "/tmp/chatbot-data"), "uploads")
     try:
         upload = await save_and_validate_upload(file, upload_dir)
@@ -125,46 +192,141 @@ async def upload_document(chat_id: str = Form(...), file: UploadFile = File(...)
         cleanup_upload(upload.file_path)
 
 
-@app.post("/api/chat")
-def chat(request: ChatRequest, user: AuthenticatedUser = Depends(current_user)):
-    chat_id = request.chat_id
+@app.get("/api/chats/{chat_id}/documents")
+def list_chat_documents(chat_id: str, user: AuthenticatedUser = Depends(current_user)):
     require_owned_chat(user.id, chat_id)
     if store.configured():
-        old_messages = store.get_messages(user.id, chat_id)
-        recent = store.get_recent_messages(user.id, chat_id, RECENT_MESSAGE_LIMIT)
+        documents = store.get_documents(user.id, chat_id)
+        return {"documents": [{"id": item["id"], "chat_id": item["chat_id"],
+                               "filename": item["original_filename"], "size_bytes": item["size_bytes"],
+                               "chunks": item["chunk_count"], "created_at": item["created_at"]}
+                              for item in documents]}
+    return {"documents": [
+        {"id": row[0], "chat_id": row[1], "filename": row[2], "size_bytes": row[4],
+         "chunks": row[5], "created_at": row[7]} for row in local_get_documents(chat_id)
+    ]}
+
+
+@app.delete("/api/chats/{chat_id}/documents/{document_id}")
+def remove_chat_document(chat_id: str, document_id: str,
+                         user: AuthenticatedUser = Depends(current_user)):
+    require_owned_chat(user.id, chat_id)
+    if store.configured():
+        document = store.get_document(user.id, chat_id, document_id)
+        if not document:
+            raise HTTPException(status_code=404, detail="Document not found.")
+        remove_document_chunks(document_id, user.id)
+        store.delete_document_objects([document["storage_path"]])
+        store.delete_document(user.id, document_id)
+    else:
+        documents = local_get_documents(chat_id)
+        document = next((row for row in documents if str(row[0]) == document_id), None)
+        if not document:
+            raise HTTPException(status_code=404, detail="Document not found.")
+        delete_local_document_data(document)
+    return {"ok": True}
+
+
+@app.post("/api/chat")
+def chat(request: ChatRequest, user: AuthenticatedUser = Depends(current_user)):
+    chat_id = str(request.chat_id)
+    require_owned_chat(user.id, chat_id)
+    enforce_user_limit(user.id, "chat", int(os.getenv("CHAT_REQUESTS_PER_MINUTE", "20")), 60)
+    generation_id = str(uuid.uuid4())
+    cancelled = threading.Event()
+    _generation_events[generation_id] = (user.id, cancelled)
+    if store.configured():
+        history = store.get_messages(user.id, chat_id)
+        if request.regenerate and history and history[-1]["role"] == "assistant":
+            prior_user = next((item for item in reversed(history[:-1]) if item["role"] == "user"), None)
+            if prior_user and prior_user["content"] == request.message:
+                store.delete_last_assistant_message(user.id, chat_id)
+                history = store.get_messages(user.id, chat_id)
+        history_pairs = [(item["role"], item["content"]) for item in history]
+        reuse_user = bool(request.regenerate and history_pairs and history_pairs[-1] == ("user", request.message))
+        if reuse_user:
+            user_message = history_pairs[-1][1]
+            recent = history_pairs[:-1][-RECENT_MESSAGE_LIMIT:]
+        else:
+            user_message = request.message
+            recent = history_pairs[-RECENT_MESSAGE_LIMIT:]
         add = lambda role, content, sources=None: store.add_message(user.id, chat_id, role, content, sources)
-        if not old_messages:
-            title = request.message.strip()[:40] or "New Conversation"
+        if not history:
+            title = user_message.strip()[:40] or "New Conversation"
             store.update_chat_title(user.id, chat_id, title)
     else:
-        old_messages = local_get_messages(chat_id)
-        recent = local_get_recent_messages(chat_id, RECENT_MESSAGE_LIMIT)
+        history = local_get_messages(chat_id)
+        if request.regenerate and history and history[-1][0] == "assistant":
+            prior_user = next((item for item in reversed(history[:-1]) if item[0] == "user"), None)
+            if prior_user and prior_user[1] == request.message:
+                local_delete_last_assistant_message(chat_id)
+                history = local_get_messages(chat_id)
+        reuse_user = bool(request.regenerate and history and history[-1] == ("user", request.message))
+        if reuse_user:
+            user_message = history[-1][1]
+            recent = history[:-1][-RECENT_MESSAGE_LIMIT:]
+        else:
+            user_message = request.message
+            recent = history[-RECENT_MESSAGE_LIMIT:]
         add = lambda role, content, sources=None: local_add_message(chat_id, role, content, json.dumps(sources or []))
-        if not old_messages:
-            local_update_chat_title(chat_id, request.message.strip()[:40] or "New Conversation")
-    add("user", request.message)
+        if not history:
+            local_update_chat_title(chat_id, user_message.strip()[:40] or "New Conversation")
+    if not reuse_user:
+        add("user", user_message)
+    action_prompts = {
+        "summary": "Summarize the uploaded documents. Organize the summary under clear headings and only use available document evidence.",
+        "key_points": "Extract the most important key points from the uploaded documents as a concise numbered list, using only available document evidence.",
+        "quiz": "Create a 5-question quiz from the uploaded documents. Include an answer key after the questions and use only available document evidence.",
+    }
+    question = action_prompts.get(request.action, user_message)
     try:
-        chunks = search_documents(request.message, chat_id, top_k=3, owner_id=user.id if store.configured() else None)
+        chunks = search_documents(question, chat_id, top_k=5, owner_id=user.id if store.configured() else None)
     except Exception:
         logger.exception("Document retrieval failed")
         chunks = []
     context = "\n\n".join(f"Source: {item['filename']}\n{item['text']}" for item in chunks)
-    sources = [{"document_id": item["document_id"], "filename": item["filename"], "chunk": item["chunk"]} for item in chunks]
-    prompt = build_chat_messages(recent, request.message, context)
+    sources = [{"document_id": item["document_id"], "filename": item["filename"],
+                "chunk": item["chunk"], **({"page": item["page"]} if item.get("page") else {})}
+               for item in chunks]
+    prompt = build_chat_messages(recent, question, context)
 
     def generate():
         response = ""
+        iterator = iter(stream_chat(prompt))
         try:
-            for token in stream_chat(prompt):
+            for token in iterator:
+                if cancelled.is_set():
+                    break
                 response += token
                 yield json.dumps({"token": token}) + "\n"
+        except GeneratorExit:
+            cancelled.set()
+            if response:
+                add("assistant", response, sources)
+            raise
         except Exception:
             logger.exception("AI response generation failed")
             yield json.dumps({"error": "AI response failed. Check the configured AI provider and model settings."}) + "\n"
             return
+        finally:
+            close = getattr(iterator, "close", None)
+            if close:
+                close()
+            _generation_events.pop(generation_id, None)
         add("assistant", response, sources)
-        yield json.dumps({"sources": sources}) + "\n"
-    return StreamingResponse(generate(), media_type="application/x-ndjson")
+        if not cancelled.is_set():
+            yield json.dumps({"sources": sources}) + "\n"
+    return StreamingResponse(generate(), media_type="application/x-ndjson",
+                             headers={"X-Generation-ID": generation_id})
+
+
+@app.post("/api/chat/stop")
+def stop_chat_generation(body: StopRequest, user: AuthenticatedUser = Depends(current_user)):
+    generation = _generation_events.get(body.generation_id)
+    if not generation or generation[0] != user.id:
+        raise HTTPException(status_code=404, detail="Generation not found.")
+    generation[1].set()
+    return {"stopping": True}
 
 
 @app.post("/api/new-chat")
@@ -175,11 +337,28 @@ def new_chat(user: AuthenticatedUser = Depends(current_user)):
 
 
 @app.get("/api/chats")
-def get_all_chats(user: AuthenticatedUser = Depends(current_user)):
+def get_all_chats(archived: bool = False, user: AuthenticatedUser = Depends(current_user)):
     if store.configured():
-        chats = store.get_chats(user.id)
+        chats = store.get_chats(user.id, archived)
         return {"chats": chats}
-    return {"chats": [{"id": row[0], "title": row[1], "created_at": row[2]} for row in local_get_chats()]}
+    return {"chats": [{"id": row[0], "title": row[1], "created_at": row[2], "archived": bool(row[3])}
+                       for row in local_get_chats(archived)]}
+
+
+@app.get("/api/chats/export")
+def export_chats(user: AuthenticatedUser = Depends(current_user)):
+    if store.configured():
+        chats = store.get_chats(user.id, False) + store.get_chats(user.id, True)
+        result = [{"id": chat["id"], "title": chat["title"],
+                   "messages": [{"role": row["role"], "content": row["content"],
+                                 "sources": row.get("sources", [])}
+                                for row in store.get_messages(user.id, chat["id"]) ]}
+                  for chat in chats]
+    else:
+        local_chats = local_get_chats(False) + local_get_chats(True)
+        result = [{"id": row[0], "title": row[1], "messages": local_get_messages_with_sources(row[0])}
+                  for row in local_chats]
+    return {"chats": result}
 
 
 @app.get("/api/chats/{chat_id}")
@@ -187,7 +366,9 @@ def get_chat_messages(chat_id: str, user: AuthenticatedUser = Depends(current_us
     require_owned_chat(user.id, chat_id)
     if store.configured():
         rows = store.get_messages(user.id, chat_id)
-        messages = [{"role": row["role"], "content": row["content"], "sources": row.get("sources", [])} for row in rows]
+        messages = [{"id": row["id"], "role": row["role"], "content": row["content"],
+                     "sources": row.get("sources", []), "feedback": row.get("feedback")}
+                    for row in rows]
     else:
         messages = local_get_messages_with_sources(chat_id)
     return {"chat_id": chat_id, "messages": messages}
@@ -196,10 +377,35 @@ def get_chat_messages(chat_id: str, user: AuthenticatedUser = Depends(current_us
 @app.patch("/api/chats/{chat_id}")
 def rename_chat(chat_id: str, body: RenameRequest, user: AuthenticatedUser = Depends(current_user)):
     require_owned_chat(user.id, chat_id)
-    if not store.configured():
-        local_update_chat_title(chat_id, body.title.strip())
+    if body.title is None and body.archived is None:
+        raise HTTPException(status_code=422, detail="Set a title or archive state.")
+    if body.title is not None:
+        if not store.configured():
+            local_update_chat_title(chat_id, body.title.strip())
+        else:
+            store.update_chat_title(user.id, chat_id, body.title.strip())
+    if body.archived is not None:
+        if not store.configured():
+            local_set_chat_archived(chat_id, body.archived)
+        else:
+            store.set_chat_archived(user.id, chat_id, body.archived)
+    return {"ok": True}
+
+
+@app.patch("/api/chats/{chat_id}/messages/{message_id}/feedback")
+def message_feedback(chat_id: str, message_id: str, body: FeedbackRequest,
+                     user: AuthenticatedUser = Depends(current_user)):
+    require_owned_chat(user.id, chat_id)
+    if body.feedback not in {-1, 1}:
+        raise HTTPException(status_code=422, detail="Feedback must be 1 or -1.")
+    if store.configured():
+        rows = store.get_messages(user.id, chat_id)
+        if not any(str(row["id"]) == message_id and row["role"] == "assistant" for row in rows):
+            raise HTTPException(status_code=404, detail="Assistant message not found.")
+        store.set_message_feedback(user.id, chat_id, message_id, body.feedback)
     else:
-        store.update_chat_title(user.id, chat_id, body.title.strip())
+        if not local_set_message_feedback(chat_id, int(message_id), body.feedback):
+            raise HTTPException(status_code=404, detail="Message not found.")
     return {"ok": True}
 
 
@@ -209,8 +415,7 @@ def remove_chat(chat_id: str, user: AuthenticatedUser = Depends(current_user)):
     if store.configured():
         store.delete_chat(user.id, chat_id)
     else:
-        from backend.database import delete_chat as local_delete_chat
-        local_delete_chat(chat_id)
+        delete_local_chat_data(chat_id)
     return {"ok": True}
 
 
@@ -219,6 +424,14 @@ def clear_chats(user: AuthenticatedUser = Depends(current_user)):
     if store.configured():
         store.delete_all_chats(user.id)
     else:
-        from backend.database import delete_all_chats as local_delete_all_chats
-        local_delete_all_chats()
+        clear_local_chat_data()
+    return {"ok": True}
+
+
+@app.delete("/api/account")
+def delete_account(user: AuthenticatedUser = Depends(current_user)):
+    if store.configured():
+        store.delete_user_data(user.id)
+    else:
+        clear_local_chat_data()
     return {"ok": True}

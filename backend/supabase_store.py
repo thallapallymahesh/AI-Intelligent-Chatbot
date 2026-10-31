@@ -98,9 +98,10 @@ def create_chat(owner_id, title="New Conversation"):
     return _insert("chats", {"owner_id": owner_id, "title": title})
 
 
-def get_chats(owner_id):
+def get_chats(owner_id, archived=False):
     return _rows("chats", owner_id=owner_id,
-                 select="id,title,created_at,updated_at", order="updated_at.desc")
+                 filters={"archived": f"eq.{str(archived).lower()}"},
+                 select="id,title,created_at,updated_at,archived", order="updated_at.desc")
 
 
 def get_chat(owner_id, chat_id):
@@ -112,7 +113,7 @@ def get_chat(owner_id, chat_id):
 def get_messages(owner_id, chat_id):
     return _rows("messages", owner_id=owner_id,
                  filters={"chat_id": f"eq.{chat_id}"},
-                 select="id,role,content,sources,created_at", order="created_at.asc")
+                 select="id,role,content,sources,feedback,created_at", order="created_at.asc")
 
 
 def get_recent_messages(owner_id, chat_id, limit):
@@ -122,6 +123,15 @@ def get_recent_messages(owner_id, chat_id, limit):
                  filters={"chat_id": f"eq.{chat_id}"},
                  select="role,content,created_at", order="created_at.desc")
     return [(row["role"], row["content"]) for row in reversed(rows[:limit])]
+
+
+def delete_last_assistant_message(owner_id, chat_id):
+    rows = _rows("messages", owner_id=owner_id,
+                 filters={"chat_id": f"eq.{chat_id}"},
+                 select="id,role", order="created_at.desc")
+    if rows and rows[0]["role"] == "assistant":
+        return _delete("messages", owner_id=owner_id,
+                       filters={"chat_id": f"eq.{chat_id}", "id": f"eq.{rows[0]['id']}"})
 
 
 def add_message(owner_id, chat_id, role, content, sources=None):
@@ -134,6 +144,17 @@ def add_message(owner_id, chat_id, role, content, sources=None):
 def update_chat_title(owner_id, chat_id, title):
     return _patch("chats", owner_id=owner_id, filters={"id": f"eq.{chat_id}"},
                   payload={"title": title})
+
+
+def set_chat_archived(owner_id, chat_id, archived):
+    return _patch("chats", owner_id=owner_id, filters={"id": f"eq.{chat_id}"},
+                  payload={"archived": archived})
+
+
+def set_message_feedback(owner_id, chat_id, message_id, feedback):
+    return _patch("messages", owner_id=owner_id,
+                  filters={"chat_id": f"eq.{chat_id}", "id": f"eq.{message_id}"},
+                  payload={"feedback": feedback})
 
 
 def get_document_by_hash(owner_id, chat_id, content_hash):
@@ -164,13 +185,31 @@ def delete_document(owner_id, document_id):
                    filters={"id": f"eq.{document_id}"})
 
 
-def insert_document_chunks(owner_id, chat_id, document_id, filename, chunks, embeddings):
+def get_documents(owner_id, chat_id):
+    return _rows("documents", owner_id=owner_id,
+                 filters={"chat_id": f"eq.{chat_id}"},
+                 select="id,chat_id,original_filename,size_bytes,chunk_count,created_at",
+                 order="created_at.desc")
+
+
+def get_document(owner_id, chat_id, document_id):
+    rows = _rows("documents", owner_id=owner_id,
+                 filters={"chat_id": f"eq.{chat_id}", "id": f"eq.{document_id}"})
+    return rows[0] if rows else None
+
+
+def delete_auth_user(user_id):
+    _request(f"/auth/v1/admin/users/{quote(user_id, safe='')}", "DELETE", admin=True)
+
+
+def insert_document_chunks(owner_id, chat_id, document_id, filename, chunks, embeddings, page_numbers):
     rows = [{
         "owner_id": owner_id,
         "chat_id": chat_id,
         "document_id": document_id,
         "filename": filename,
         "chunk_index": index,
+        "page_number": page_numbers[index],
         "content": content,
         "embedding": "[" + ",".join(str(float(value)) for value in vector) + "]",
     } for index, (content, vector) in enumerate(zip(chunks, embeddings))]
@@ -211,6 +250,13 @@ def delete_chat(owner_id, chat_id):
     return _delete("chats", owner_id=owner_id, filters={"id": f"eq.{chat_id}"})
 
 
+def delete_user_data(owner_id):
+    paths = [row["storage_path"] for row in _rows(
+        "documents", owner_id=owner_id, select="storage_path")]
+    delete_document_objects(paths)
+    delete_auth_user(owner_id)
+
+
 def delete_all_chats(owner_id):
-    for chat in get_chats(owner_id):
+    for chat in get_chats(owner_id, False) + get_chats(owner_id, True):
         delete_chat(owner_id, chat["id"])
